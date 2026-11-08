@@ -89,6 +89,7 @@ import { GameActivities, installedTitleId } from './game-activity.js';
 import {gameDetailsTarget} from './game-details-target.js';
 import { AchievementUnlockWatcher, GameAchievementsReader } from './game-achievements.js';
 import { AchievementEventWriter } from './achievement-events.js';
+import { AchievementSnapshotWriter } from './achievement-snapshots.js';
 import { GameContent, type ContentPackage } from './game-content.js';
 import { backendRunner, changeOfflinePermissions, readOfflinePermissions } from './offline-permissions.js';
 import { startAuthTransport } from './auth-transport.js';
@@ -216,6 +217,22 @@ const catalog = new CatalogService();
 const gameActivities = new GameActivities();
 const gameAchievements = new GameAchievementsReader();
 const achievementEvents = new AchievementEventWriter();
+const achievementSnapshots = new AchievementSnapshotWriter();
+let snapshotSweep = 0;
+/** Export snapshots for installed library titles once per account/backend selection, gently and sequentially. */
+async function refreshLibrarySnapshots(account: string | undefined, binary: string | undefined): Promise<void> {
+  const sweep = ++snapshotSweep;
+  if (!account || !binary) return;
+  const current = () => sweep === snapshotSweep && !shutdownStarted && (authState.player ?? (authState.stored === true ? authState.username : undefined)) === account && backend.current.binaryPath === binary;
+  for (const game of store.games.slice(0, 40)) {
+    if (!current()) return;
+    try {
+      const title = await installedTitleId(game.path);
+      if (title && current()) await achievementSnapshots.record(title, game.title, await gameAchievements.get(title));
+    } catch { /* One title failing must not stop the sweep. */ }
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+}
 const recentPcGamePass = new RecentPcGamePass();
 const homeGamePassShelf = new HomeGamePassShelf(recentPcGamePass, catalog);
 const accountLibrary = new AccountLibrary((ids, market) => catalog.licensedProducts(ids, market), undefined, market => recentPcGamePass.get(market));
@@ -648,6 +665,8 @@ async function refreshAccount(emit = true, afterAuth = false): Promise<AuthStatu
     savedAccountsEnabled = saved?.enabled;
     await licenseProfile?.select(authState.stored === true && authState.player ? authState.username : undefined,
       status.capabilities.licenseProfile ? status.binaryPath : undefined, emit);
+    void refreshLibrarySnapshots(authState.player ?? (authState.stored === true ? authState.username : undefined),
+      status.capabilities.achievements ? status.binaryPath : undefined);
   }, () => key === accountRefreshKey() && (!authState.running || afterAuth));
   if (emit) emitSnapshot();
   return structuredClone(authState);
@@ -1489,15 +1508,21 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
       inviteBridge=new GameInviteBridge(operationId,game.title,String(parseInt(titleId,16)),current,emitSnapshot,()=>{void showFriends().catch(()=>{});},Date.now,sender=>{
         if(!Notification.isSupported())return;
         try{const notice=new Notification({title:nativeText('Game invitation'),body:nativeText(`${sender} invited you to ${game.title}. Open Friends to accept.`),urgency:'normal'});notice.on('click',()=>{void showFriends().catch(()=>{});});notice.on('failed',()=>{});notice.show();}catch{/* The dock remains available without desktop notifications. */}
-      },new XboxTitlePresence(current,addGameLog),event=>{void achievementEvents.emit(event);});
+      },new XboxTitlePresence(current,addGameLog),event=>{void achievementEvents.emit(event);void achievementSnapshots.unlock(event.titleId,event.id);});
       if(backend.current.capabilities.achievements&&backend.current.binaryPath&&!await achievementNotifyRuntime(wine)){
         const reader=new GameAchievementsReader(),watcher=new AchievementUnlockWatcher(),title=String(parseInt(titleId,16));
         reader.select(account,backend.current.binaryPath);
         const poll=async()=>{
           if(!current()||achievementEvents.hasNative(title))return;
-          for(const item of watcher.diff(title,await reader.get(title,true)))void achievementEvents.emit({titleId:title,scid:'',id:item.id,name:item.name,description:item.description,gamerscore:item.gamerscore??0,iconUrl:item.iconUrl??''},'poll');
+          const value=await reader.get(title,true);
+          void achievementSnapshots.record(title,game.title,value);
+          for(const item of watcher.diff(title,value))void achievementEvents.emit({titleId:title,scid:'',id:item.id,name:item.name,description:item.description,gamerscore:item.gamerscore??0,iconUrl:item.iconUrl??''},'poll');
         };
         void poll();achievementPoll=setInterval(()=>{void poll();},60000);achievementPoll.unref();
+      }else if(backend.current.capabilities.achievements&&backend.current.binaryPath){
+        const reader=new GameAchievementsReader(),title=String(parseInt(titleId,16));
+        reader.select(account,backend.current.binaryPath);
+        void reader.get(title,true).then(value=>current()?achievementSnapshots.record(title,game.title,value):undefined);
       }
       try{
         await inviteBridge.start();gameInviteBridges.set(operationId,inviteBridge);
@@ -2272,6 +2297,7 @@ function registerIpc(): void {
     if (authState.running || (!authState.player && authState.stored !== true) || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
     const value = await gameAchievements.get(title, refresh);
     if (authState.running || (!authState.player && authState.stored !== true) || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
+    if (target.game) void achievementSnapshots.record(title, target.game.title, value);
     return value;
   });
   ipcMain.handle('launch-game', (_event, id: string) => launchGame(id));
