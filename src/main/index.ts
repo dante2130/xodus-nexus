@@ -49,7 +49,7 @@ import { CatalogService } from './catalog.js';
 import {readXboxProfileGames} from './xbox-profile-games.js';
 import {catalogDetailMarket, publicStoreMarket} from './public-store-market.js';
 import {assertStoreOfferAccess} from './catalog-access.js';
-import { cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, selectedWinePath, startXodusService, storeContentRuntime, storeDiscoveryRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
+import { achievementNotifyRuntime, cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, selectedWinePath, startXodusService, storeContentRuntime, storeDiscoveryRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
 import { GameLogReducer, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
 import { downloadVerifiedVcRedist, installedVcRuntimeVersion, VC_REDIST_VERSION, versionAtLeast } from './vc-runtime.js';
 import { assertGameRemovalAvailable, validateGameDeleteTarget } from './game-removal.js';
@@ -87,7 +87,8 @@ import { HomeGamePassShelf } from './home-gamepass.js';
 import { newInstallationTime } from './install-time.js';
 import { GameActivities, installedTitleId } from './game-activity.js';
 import {gameDetailsTarget} from './game-details-target.js';
-import { GameAchievementsReader } from './game-achievements.js';
+import { AchievementUnlockWatcher, GameAchievementsReader } from './game-achievements.js';
+import { AchievementEventWriter } from './achievement-events.js';
 import { GameContent, type ContentPackage } from './game-content.js';
 import { backendRunner, changeOfflinePermissions, readOfflinePermissions } from './offline-permissions.js';
 import { startAuthTransport } from './auth-transport.js';
@@ -214,6 +215,7 @@ let initialWalletAttempted = false;
 const catalog = new CatalogService();
 const gameActivities = new GameActivities();
 const gameAchievements = new GameAchievementsReader();
+const achievementEvents = new AchievementEventWriter();
 const recentPcGamePass = new RecentPcGamePass();
 const homeGamePassShelf = new HomeGamePassShelf(recentPcGamePass, catalog);
 const accountLibrary = new AccountLibrary((ids, market) => catalog.licensedProducts(ids, market), undefined, market => recentPcGamePass.get(market));
@@ -1379,6 +1381,7 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
   emitSnapshot();
   let serviceSession: XodusServiceSession | undefined;
   let inviteBridge: GameInviteBridge | undefined;
+  let achievementPoll: NodeJS.Timeout | undefined;
   let launchWrapper: GameWrapper | undefined;
   let releaseDisplay = () => {};
   const launchEnvironment = steamGameEnvironment(process.env, steam?.environment ?? steamLauncherSession?.environment);
@@ -1486,7 +1489,16 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
       inviteBridge=new GameInviteBridge(operationId,game.title,String(parseInt(titleId,16)),current,emitSnapshot,()=>{void showFriends().catch(()=>{});},Date.now,sender=>{
         if(!Notification.isSupported())return;
         try{const notice=new Notification({title:nativeText('Game invitation'),body:nativeText(`${sender} invited you to ${game.title}. Open Friends to accept.`),urgency:'normal'});notice.on('click',()=>{void showFriends().catch(()=>{});});notice.on('failed',()=>{});notice.show();}catch{/* The dock remains available without desktop notifications. */}
-      },new XboxTitlePresence(current,addGameLog));
+      },new XboxTitlePresence(current,addGameLog),event=>{void achievementEvents.emit(event);});
+      if(backend.current.capabilities.achievements&&backend.current.binaryPath&&!await achievementNotifyRuntime(wine)){
+        const reader=new GameAchievementsReader(),watcher=new AchievementUnlockWatcher(),title=String(parseInt(titleId,16));
+        reader.select(account,backend.current.binaryPath);
+        const poll=async()=>{
+          if(!current()||achievementEvents.hasNative(title))return;
+          for(const item of watcher.diff(title,await reader.get(title,true)))void achievementEvents.emit({titleId:title,scid:'',id:item.id,name:item.name,description:item.description,gamerscore:item.gamerscore??0,iconUrl:item.iconUrl??''},'poll');
+        };
+        void poll();achievementPoll=setInterval(()=>{void poll();},60000);achievementPoll.unref();
+      }
       try{
         await inviteBridge.start();gameInviteBridges.set(operationId,inviteBridge);
         environment.NEXUS_INVITE_PORT=String(inviteBridge.port);environment.NEXUS_INVITE_KEY=inviteBridge.key;
@@ -1554,7 +1566,7 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
       try {
         operations.delete(operationId);
         gameProcesses.delete(operationId);
-        await inviteBridge?.stop().catch(()=>{});gameInviteBridges.delete(operationId);
+        clearInterval(achievementPoll);await inviteBridge?.stop().catch(()=>{});gameInviteBridges.delete(operationId);
         if (serviceSession) {
           await serviceSession.stop().catch((error) => addGameLog(`Account service cleanup failed: ${(error as Error).message}`));
           serviceSessions.delete(operationId);
@@ -1577,7 +1589,7 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
   } catch (error) {
     removeSteamStop();
     releaseDisplay();gameGuide?.unbind(id);
-    await inviteBridge?.stop().catch(()=>{});gameInviteBridges.delete(operationId);
+    clearInterval(achievementPoll);await inviteBridge?.stop().catch(()=>{});gameInviteBridges.delete(operationId);
     await launchWrapper?.cleanup().catch(() => undefined);
     if (serviceSession) {
       await serviceSession.stop().catch(() => undefined);

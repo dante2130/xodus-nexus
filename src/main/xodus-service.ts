@@ -86,6 +86,10 @@ async function runtimeFeatures(winePath: string): Promise<unknown[]> {
   } catch { return []; }
 }
 
+export async function achievementNotifyRuntime(winePath: string): Promise<boolean> {
+  return (await runtimeFeatures(winePath)).includes('achievement-notify-v1');
+}
+
 export async function cloudSaveRuntime(winePath: string): Promise<boolean> {
   const features = await runtimeFeatures(winePath);
   return features.includes('cloud-saves-pr28') && features.includes('xodus-tcp-bridge-v1');
