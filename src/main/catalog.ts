@@ -121,7 +121,7 @@ function browsePage(value: unknown): number {
 // square library tiles; promotional square art is the textless fallback.
 const POSTER_PURPOSES = ['BoxArt', 'TitledPoster', 'Poster', 'FeaturePromotionalSquareArt'];
 const HERO_PURPOSES = ['TitledHeroArt', 'SuperHeroArt', 'Hero', 'Screenshot'];
-export interface CatalogArtwork { coverUrl?: string; heroUrl?: string }
+export interface CatalogArtwork { coverUrl?: string; heroUrl?: string; title?: string }
 
 function displayImage(images: DisplayCatalogImage[], purposes: string[]): string | undefined {
   for (const purpose of purposes) {
@@ -833,7 +833,8 @@ export class CatalogService {
           const images = Array.isArray(first?.Images) ? first.Images as DisplayCatalogImage[] : [];
           const coverUrl = displayImage(images, POSTER_PURPOSES);
           const heroUrl = displayImage(images, HERO_PURPOSES);
-          if (coverUrl || heroUrl) artwork.set(id, { coverUrl, heroUrl });
+          const title = string(first?.ProductTitle);
+          if (coverUrl || heroUrl || title) artwork.set(id, { coverUrl, heroUrl, ...(title ? { title } : {}) });
         }
       } catch {
         // Covers stay hidden when the display catalog is unavailable.

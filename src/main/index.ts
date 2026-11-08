@@ -18,7 +18,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { AppSnapshot, AuthStatus, ConnectivityStatus, DownloadTask, Game, OfflinePermissions, GameLaunchOptions, GameOperation, GameUpdate, InstallRequest, Settings } from '../shared/types.js';
+import type { AppSnapshot, AuthStatus, ConnectivityStatus, DownloadTask, Game, GameAchievements, OfflinePermissions, GameLaunchOptions, GameOperation, GameUpdate, InstallRequest, Settings } from '../shared/types.js';
 import { downloadFailure, safeProductId } from '../shared/utils.js';
 import { contentLicenseFailure } from '../shared/content-license.js';
 import { interfaceLanguagePreference } from '../shared/interface-language.js';
@@ -218,6 +218,23 @@ const gameActivities = new GameActivities();
 const gameAchievements = new GameAchievementsReader();
 const achievementEvents = new AchievementEventWriter();
 const achievementSnapshots = new AchievementSnapshotWriter();
+// Reuse Store metadata across the sweep and in-game achievement polling.
+const achievementMetadata = new Map<string, Promise<{ title?: string; coverUrl?: string }>>();
+async function recordGameAchievements(titleId: string, game: Game, value: GameAchievements): Promise<boolean> {
+  if (value.status !== 'available') return false;
+  let metadata: { title?: string; coverUrl?: string } = {};
+  if (game.storeId) {
+    const key = `${currentMarket()}:${game.storeId.toUpperCase()}`;
+    let request = achievementMetadata.get(key);
+    if (!request) {
+      request = catalog.artwork([game.storeId], currentMarket()).then(rows => rows.get(game.storeId!.toUpperCase()) ?? {});
+      achievementMetadata.set(key, request);
+    }
+    try { metadata = await request; } catch { achievementMetadata.delete(key); }
+    if (!metadata.title) achievementMetadata.delete(key);
+  }
+  return achievementSnapshots.record(titleId, metadata.title || game.title, value, metadata.coverUrl || game.coverUrl);
+}
 let snapshotSweep = 0;
 /** Export snapshots for installed library titles once per account/backend selection, gently and sequentially. */
 async function refreshLibrarySnapshots(account: string | undefined, binary: string | undefined): Promise<void> {
@@ -228,7 +245,7 @@ async function refreshLibrarySnapshots(account: string | undefined, binary: stri
     if (!current()) return;
     try {
       const title = await installedTitleId(game.path);
-      if (title && current()) await achievementSnapshots.record(title, game.title, await gameAchievements.get(title));
+      if (title && current()) await recordGameAchievements(title, game, await gameAchievements.get(title));
     } catch { /* One title failing must not stop the sweep. */ }
     await new Promise(resolve => setTimeout(resolve, 1500));
   }
@@ -489,7 +506,22 @@ async function refreshIncompleteUpdate(game: Game): Promise<boolean> {
   return true;
 }
 
+let exportedRunningGame: string | undefined;
+let runningGameRevision = 0;
+function exportRunningGame(): void {
+  const game = gameOperation?.kind === 'launch' && gameOperation.status === 'running'
+    ? store?.games.find(item => item.id === gameOperation?.gameId) : undefined;
+  const key = game?.id ?? '';
+  if (key === exportedRunningGame) return;
+  exportedRunningGame = key;
+  const revision = ++runningGameRevision;
+  void (game ? installedTitleId(game.path) : Promise.resolve(undefined)).then(titleId => {
+    if (revision === runningGameRevision) return achievementSnapshots.setRunning(titleId ?? null);
+  }).catch(() => { if (revision === runningGameRevision) void achievementSnapshots.setRunning(null); });
+}
+
 function emitSnapshot(): void {
+  exportRunningGame();
   syncNativeSocialBackend();
   if (snapshotTimer) clearTimeout(snapshotTimer);
   snapshotTimer = undefined;
@@ -1515,14 +1547,14 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
         const poll=async()=>{
           if(!current()||achievementEvents.hasNative(title))return;
           const value=await reader.get(title,true);
-          void achievementSnapshots.record(title,game.title,value);
+          void recordGameAchievements(title,game,value);
           for(const item of watcher.diff(title,value))void achievementEvents.emit({titleId:title,scid:'',id:item.id,name:item.name,description:item.description,gamerscore:item.gamerscore??0,iconUrl:item.iconUrl??''},'poll');
         };
         void poll();achievementPoll=setInterval(()=>{void poll();},60000);achievementPoll.unref();
       }else if(backend.current.capabilities.achievements&&backend.current.binaryPath){
         const reader=new GameAchievementsReader(),title=String(parseInt(titleId,16));
         reader.select(account,backend.current.binaryPath);
-        void reader.get(title,true).then(value=>current()?achievementSnapshots.record(title,game.title,value):undefined);
+        void reader.get(title,true).then(value=>current()?recordGameAchievements(title,game,value):undefined);
       }
       try{
         await inviteBridge.start();gameInviteBridges.set(operationId,inviteBridge);
@@ -2297,7 +2329,7 @@ function registerIpc(): void {
     if (authState.running || (!authState.player && authState.stored !== true) || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
     const value = await gameAchievements.get(title, refresh);
     if (authState.running || (!authState.player && authState.stored !== true) || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
-    if (target.game) void achievementSnapshots.record(title, target.game.title, value);
+    if (target.game) void recordGameAchievements(title, target.game, value);
     return value;
   });
   ipcMain.handle('launch-game', (_event, id: string) => launchGame(id));
