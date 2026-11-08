@@ -188,7 +188,7 @@ describe('CatalogService', () => {
 
   it('selects separate branded tile and wide artwork, skipping unsafe images and unrelated products', async () => {
     const fetcher = (async () => new Response(JSON.stringify({ Products: [
-      { ProductId: '9GAME123', LocalizedProperties: [{ Images: [
+      { ProductId: '9GAME123', LocalizedProperties: [{ ProductTitle: 'Store game title', Images: [
         { ImagePurpose: 'Logo', Uri: '//store-images.s-microsoft.com/logo' },
         { ImagePurpose: 'BoxArt', Uri: '//foreign.example/box' },
         { ImagePurpose: 'BoxArt', Uri: '//store-images.s-microsoft.com/box' },
@@ -198,7 +198,7 @@ describe('CatalogService', () => {
       { ProductId: '9OTHER', LocalizedProperties: [{ Images: [{ ImagePurpose: 'BoxArt', Uri: '//store-images.s-microsoft.com/other' }] }] },
     ] }), { headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
     const artwork = await new CatalogService(fetcher).artwork(['9game123'], 'US');
-    expect(artwork.get('9GAME123')).toEqual({ coverUrl: 'https://store-images.s-microsoft.com/box', heroUrl: 'https://store-images.s-microsoft.com/titled-hero' });
+    expect(artwork.get('9GAME123')).toEqual({ coverUrl: 'https://store-images.s-microsoft.com/box', heroUrl: 'https://store-images.s-microsoft.com/titled-hero', title: 'Store game title' });
     expect(artwork.has('9OTHER')).toBe(false);
   });
 

@@ -44,3 +44,20 @@ it('native unlock flips the entry, bumps counts and survives a restart', async (
   await next.record('2', 'Two', { status: 'available', items: [item('x')] });
   expect(read(d, 'index.json').titles.map((entry: { titleId: string }) => entry.titleId).sort()).toEqual(['2', '9']);
 });
+
+it('exports Store title and cover and preserves them across native unlocks', async () => {
+  const d = dir(), writer = new AchievementSnapshotWriter(d);
+  const cover = 'https://store-images.s-microsoft.com/cover';
+  await writer.record('123', 'DRAGON QUEST XI S', { status: 'available', items: [item('a')] }, cover);
+  await writer.unlock('123', 'a');
+  expect(read(d, '123.json')).toMatchObject({ titleName: 'DRAGON QUEST XI S', coverUrl: cover });
+  expect(read(d, 'index.json').titles[0]).toMatchObject({ titleName: 'DRAGON QUEST XI S', coverUrl: cover, unlocked: 1 });
+});
+
+it('publishes and clears the running title without adding it to the index', async () => {
+  const d = dir(), writer = new AchievementSnapshotWriter(d);
+  await writer.setRunning('123');
+  expect(read(d, 'running.json')).toEqual({ titleId: '123', launcherPid: process.pid });
+  await writer.setRunning(null);
+  expect(read(d, 'running.json').titleId).toBeNull();
+});

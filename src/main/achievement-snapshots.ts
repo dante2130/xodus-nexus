@@ -5,8 +5,8 @@ import type { GameAchievement, GameAchievements } from '../shared/types.js';
 import { safeAchievementIcon } from './game-achievements.js';
 
 export interface SnapshotAchievement { id: string; name: string; description: string; gamerscore: number; iconUrl: string; unlocked: boolean; unlockedAt: number | null; progress: number | null; secret: boolean; }
-export interface TitleSnapshot { version: 1; titleId: string; titleName: string; updatedAt: number; achievements: SnapshotAchievement[]; }
-export interface SnapshotIndexEntry { titleId: string; titleName: string; unlocked: number; total: number; gamerscore: number; gamerscoreTotal: number; updatedAt: number; }
+export interface TitleSnapshot { version: 1; titleId: string; titleName: string; coverUrl?: string; updatedAt: number; achievements: SnapshotAchievement[]; }
+export interface SnapshotIndexEntry { titleId: string; titleName: string; coverUrl?: string; unlocked: number; total: number; gamerscore: number; gamerscoreTotal: number; updatedAt: number; }
 
 const MAX_ITEMS = 500, MAX_INDEX = 500, MAX_FILE_BYTES = 4_000_000;
 const clean = (value: unknown, max: number) => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, max) : '';
@@ -33,7 +33,7 @@ function fromBackend(item: GameAchievement): SnapshotAchievement {
 
 function summarize(snapshot: TitleSnapshot): SnapshotIndexEntry {
   const unlocked = snapshot.achievements.filter(item => item.unlocked);
-  return { titleId: snapshot.titleId, titleName: snapshot.titleName, unlocked: unlocked.length, total: snapshot.achievements.length,
+  return { titleId: snapshot.titleId, titleName: snapshot.titleName, ...(snapshot.coverUrl ? { coverUrl: snapshot.coverUrl } : {}), unlocked: unlocked.length, total: snapshot.achievements.length,
     gamerscore: unlocked.reduce((sum, item) => sum + item.gamerscore, 0), gamerscoreTotal: snapshot.achievements.reduce((sum, item) => sum + item.gamerscore, 0), updatedAt: snapshot.updatedAt };
 }
 
@@ -45,7 +45,7 @@ export class AchievementSnapshotWriter {
   constructor(private dir = achievementSnapshotsDir(), private now = Date.now) {}
 
   /** Replace a title's snapshot from a successful backend read. Other statuses leave existing data untouched. */
-  record(titleId: string, titleName: string, value: GameAchievements): Promise<boolean> {
+  record(titleId: string, titleName: string, value: GameAchievements, coverUrl?: string): Promise<boolean> {
     if (value.status !== 'available' || !value.items || !validTitle(titleId)) return Promise.resolve(false);
     const name = clean(titleName, 256);
     if (!name) return Promise.resolve(false);
@@ -53,8 +53,13 @@ export class AchievementSnapshotWriter {
     const achievements = value.items.slice(0, MAX_ITEMS).map(fromBackend).filter(item => item.id && item.name && !seen.has(item.id) && seen.add(item.id));
     return this.enqueue(async () => {
       await this.load();
-      await this.save({ version: 1, titleId, titleName: name, updatedAt: this.now(), achievements });
+      await this.save({ version: 1, titleId, titleName: name, ...(safeAchievementIcon(coverUrl ?? '') ? { coverUrl } : {}), updatedAt: this.now(), achievements });
     });
+  }
+
+  /** Publish the active title for the Decky main panel, clearing it when play ends. */
+  setRunning(titleId: string | null): Promise<boolean> {
+    return this.enqueue(() => this.atomic('running.json', { titleId, launcherPid: process.pid }));
   }
 
   /** Mark one achievement unlocked after a native in-game event; needs an existing snapshot to bump. */
