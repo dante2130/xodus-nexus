@@ -6,7 +6,7 @@ const iconHosts = new Set(['images-eds-ssl.xboxlive.com', 'images-eds.xboxlive.c
 function text(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value);
 }
-function icon(value: string): string | undefined {
+export function safeAchievementIcon(value: string): string | undefined {
   try {
     const url = new URL(value);
     if (url.protocol === 'https:' && !url.username && !url.password && !url.port && iconHosts.has(url.hostname)) return url.toString();
@@ -30,7 +30,7 @@ export function parseGameAchievements(raw: string, account: string, titleId: str
     if (image !== null && !text(image, 2048)) throw Error('Invalid achievement icon.');
     return { id: item.id, name: item.name, description: item.description, state: item.state as GameAchievement['state'], secret: item.secret, revoked: item.revoked,
       ...(score !== null ? { gamerscore: score as number } : {}), ...(progress !== null ? { progress: progress as number } : {}),
-      ...(date !== null ? { unlockedAt: new Date(date as string).toISOString() } : {}), ...(image && icon(image as string) ? { iconUrl: icon(image as string) } : {}) };
+      ...(date !== null ? { unlockedAt: new Date(date as string).toISOString() } : {}), ...(image && safeAchievementIcon(image as string) ? { iconUrl: safeAchievementIcon(image as string) } : {}) };
   });
   return { status: items.length || value.partial ? 'available' : 'unavailable', items, partial: value.partial };
 }
@@ -49,6 +49,18 @@ async function read(binary: string, titleId: string, signal: AbortSignal): Promi
     if (result.code !== 0) throw Error('Achievements unavailable.');
     return result.output;
   } finally { clearTimeout(timer); signal.removeEventListener('abort', stop); }
+}
+
+/** First observation seeds the baseline silently; later observations return only newly unlocked items. */
+export class AchievementUnlockWatcher {
+  private known = new Map<string, Set<string>>();
+  diff(titleId: string, value: GameAchievements): GameAchievement[] {
+    if (value.status !== 'available' || !value.items) return [];
+    const unlocked = value.items.filter(item => item.state === 'unlocked' && !item.revoked);
+    const previous = this.known.get(titleId);
+    this.known.set(titleId, new Set([...(previous ?? []), ...unlocked.map(item => item.id)]));
+    return previous ? unlocked.filter(item => !previous.has(item.id)) : [];
+  }
 }
 
 /** No disk cache, telemetry, unlock writes or cross-account responses. */

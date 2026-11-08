@@ -2,6 +2,7 @@ import {createServer,type Socket} from 'node:net';
 import {randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {emptyGameInvites,inviteGuid,validateGameInviteUri,type GameInviteState} from '../shared/game-invites.js';
 import {xboxUserId} from '../shared/social.js';
+import type {AchievementEvent} from './achievement-events.js';
 import type {XboxTitlePresence} from './xbox-title-presence.js';
 const INVALID=0x80070057,ABORT=0x80004004,PENDING=0x8000000a,DENIED=0x80070005;
 export function encodeInviteFields(fields:string[]):Buffer{
@@ -35,7 +36,7 @@ export class GameInviteBridge {
   private server?:ReturnType<typeof createServer>;
   readonly key=randomBytes(32).toString('hex');
   port=0;
-  constructor(readonly id:string,readonly game:string,readonly titleId:string,private current:()=>boolean,private changed:()=>void,private show:()=>void,private now=Date.now,private notified:(sender:string)=>void=()=>{},private presence?:XboxTitlePresence){}
+  constructor(readonly id:string,readonly game:string,readonly titleId:string,private current:()=>boolean,private changed:()=>void,private show:()=>void,private now=Date.now,private notified:(sender:string)=>void=()=>{},private presence?:XboxTitlePresence,private achievement?:(event:AchievementEvent)=>void){}
   async start():Promise<void>{
     if(this.server)throw Error('Invite bridge already started.');
     const expected=Buffer.from(this.key,'ascii');
@@ -78,6 +79,9 @@ export class GameInviteBridge {
     if(op==='notify'&&args.length===4&&inviteGuid(args[0])&&validateGameInviteUri(args[1],this.user)&&args[2].length<=128&&!/[\x00-\x1f\x7f]/.test(args[2])){
       const expires=Number(args[3]);if(!Number.isSafeInteger(expires)||expires<=this.now()||expires>this.now()+86400000||this.invitations.size>=32)return [INVALID,[]];
       if(!this.invitations.has(args[0])){const sender=args[2]||'Xbox player';this.invitations.set(args[0],{id:args[0],uri:args[1],sender,expires});this.changed();this.notified(sender);}return [0,[]];
+    }
+    if(op==='achievement-unlocked'&&args.length===7&&args[0]===this.titleId&&/^\d{1,10}$/.test(args[5])&&args[2].length>0&&args[2].length<=180&&args[3].length>0&&args[3].length<=256&&!args.some(value=>/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value))){
+      this.achievement?.({titleId:args[0],scid:args[1],id:args[2],name:args[3],description:args[4],gamerscore:Number(args[5]),iconUrl:args[6]});return [0,[]];
     }
     if(op==='events'&&args.length===1&&/^\d{1,10}$/.test(args[0])){const event=this.events.find(value=>value.sequence>Number(args[0]));return event?[0,[String(event.sequence),...event.fields]]:[PENDING,[]];}
     if(op==='accept'&&args.length===1){const invite=[...this.invitations.values()].find(value=>value.uri===args[0]);if(!invite)return [INVALID,[]];this.accept(this.id+':'+invite.id);return [0,[]];}

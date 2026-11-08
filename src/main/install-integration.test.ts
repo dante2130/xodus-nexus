@@ -116,6 +116,7 @@ vi.mock('./install-plan.js', async original => ({ ...await original<typeof impor
 }));
 vi.mock('./xodus-service.js', () => ({ cloudSaveRuntime: async () => h.cloudSupported, unbridgedCloudSaveRuntime: async () => false,
   gameInviteRuntime: async () => false,
+  achievementNotifyRuntime: async () => true,
   offlineIdentityRuntime: async () => h.offlineRuntimeSupported,
   selectedWinePath: () => h.wine, storeContentRuntime: async () => h.contentSupported, storeDiscoveryRuntime: async () => h.discoverySupported, startXodusService: async () => ({ socketPath: '/synthetic-updates', stop: h.updateStops }) }));
 vi.mock('./game-updates.js', () => ({ queryGameUpdate: async (_socket: string, _id: string, _version: string, signal: AbortSignal) => {
